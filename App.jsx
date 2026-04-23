@@ -1,0 +1,766 @@
+import { useState, useCallback } from "react";
+
+// ─── Advisory Types & Config ───────────────────────────────────────────────
+
+const ADVISORY_TYPES = [
+  { value: "weather", label: "Weather" },
+  { value: "food-recall", label: "Food Recall" },
+  { value: "company-announcement", label: "Company Announcement" },
+  { value: "general", label: "General" },
+  { value: "tariff-related", label: "Tariff Related" },
+  { value: "fuel-surcharge", label: "Fuel Surcharge" },
+];
+
+const GPO_OPTIONS = ["Avendra", "CPS", "HPSI", "IPS"];
+
+const TYPE_SPECIFIC_FIELDS = {
+  weather: [
+    { key: "whatHappened", label: "What happened?", type: "textarea", placeholder: "Severe winter weather is expected to impact transportation..." },
+    { key: "whyAffecting", label: "Why is this affecting operations?", type: "textarea", placeholder: "Snow accumulation and hazardous road conditions..." },
+    { key: "customerImpact", label: "Customer Operational Impact", type: "textarea", placeholder: "Customers may experience delayed deliveries..." },
+    { key: "recommendedAction", label: "Recommended Customer Action", type: "textarea", placeholder: "Please stay in touch with your account representative..." },
+  ],
+  "food-recall": [
+    { key: "affectedProducts", label: "Affected Product(s)", type: "text", placeholder: "Frozen diced chicken breast, 5 lb bags" },
+    { key: "recallReason", label: "Recall Reason", type: "textarea", placeholder: "Potential contamination identified during routine quality review" },
+    { key: "immediateAction", label: "What immediate action should customers take?", type: "textarea", placeholder: "Stop use immediately, isolate inventory..." },
+    { key: "productIdentifiers", label: "Product Identifiers", type: "text", placeholder: "SKU 123456, Lot 78910, Best By 10/15/2026" },
+    { key: "alternativeProduct", label: "Alternative Supplier or Product", type: "textarea", placeholder: "Avendra is working with XYZ Foods as an alternative supplier..." },
+  ],
+  "company-announcement": [
+    { key: "whatChanging", label: "What is changing?", type: "textarea", placeholder: "Supplier ABC will transition to a new ordering process..." },
+    { key: "whyIssued", label: "Why is this announcement being issued?", type: "textarea", placeholder: "This advisory is being issued to help customers prepare..." },
+    { key: "whenEffect", label: "When does the change take effect?", type: "text", placeholder: "May 1, 2026" },
+    { key: "whoAffected", label: "Who is affected?", type: "text", placeholder: "Customers ordering through the current regional fulfillment process." },
+    { key: "customerImpact", label: "Customer Operational Impact", type: "textarea", placeholder: "Customers may need to adjust ordering timelines..." },
+    { key: "actionRequired", label: "Is customer action required?", type: "select", options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }] },
+    { key: "requiredAction", label: "Required Customer Action", type: "textarea", placeholder: "Customers should begin using the updated order form...", showWhen: { field: "actionRequired", value: "yes" } },
+    { key: "timingDetails", label: "Additional Timing or Transition Details", type: "textarea", placeholder: "The current process will remain in place through the end of the month." },
+  ],
+  general: [
+    { key: "whatHappened", label: "What happened?", type: "textarea", placeholder: "A temporary supplier issue is affecting normal fulfillment..." },
+    { key: "whyHappened", label: "Why did it happen?", type: "textarea", placeholder: "The issue was caused by a warehouse systems outage." },
+    { key: "customerImpact", label: "What is the customer operational impact?", type: "textarea", placeholder: "Customers may experience delayed fulfillment..." },
+    { key: "whatNext", label: "What should customers do next?", type: "textarea", placeholder: "Customers should stay in contact with their representative..." },
+    { key: "issueStatus", label: "Is this issue ongoing or resolved?", type: "select", options: [{ value: "ongoing", label: "Ongoing" }, { value: "monitoring", label: "Monitoring" }, { value: "resolved", label: "Resolved" }, { value: "unknown", label: "Unknown" }] },
+    { key: "timing", label: "Effective Timing / Expected Duration", type: "text", placeholder: "The issue is expected to continue through the end of the week." },
+    { key: "alternativeProduct", label: "Alternative Supplier or Product", type: "textarea", placeholder: "Avendra is coordinating with backup suppliers..." },
+  ],
+  "fuel-surcharge": [
+    { key: "effectiveDate", label: "Effective Date", type: "text", placeholder: "4/7/2026" },
+    { key: "whatSurcharge", label: "What surcharge or pricing change is being implemented?", type: "textarea", placeholder: "Vesta Foodservice is implementing a fuel surcharge on deliveries." },
+    { key: "whyIssued", label: "Why is this being issued?", type: "textarea", placeholder: "The surcharge is being applied in accordance with the supplier agreement..." },
+    { key: "customerOperational", label: "What should customers know operationally?", type: "textarea", placeholder: "The charge applies per delivery rather than per invoice..." },
+    { key: "customerSupport", label: "What customer support or follow-up information should be included?", type: "textarea", placeholder: "Customers who believe they were overcharged should contact the supplier..." },
+    { key: "contractNote", label: "Contract or pricing note", type: "textarea", placeholder: "The surcharge is permitted under Avendra's master agreement with the supplier." },
+  ],
+  "tariff-related": [
+    { key: "whatChanged", label: "What tariff-related change occurred?", type: "textarea", placeholder: "A new tariff increase on imported foodservice equipment has been announced." },
+    { key: "affectedAreas", label: "Which products, categories, countries, or sourcing areas may be affected?", type: "textarea", placeholder: "Imported smallwares, equipment, and selected sourced goods..." },
+    { key: "costImpact", label: "What is the expected customer operational or cost impact?", type: "textarea", placeholder: "Customers may see increased pricing, sourcing adjustments..." },
+    { key: "impactStatus", label: "Are impacts confirmed or still being assessed?", type: "select", options: [{ value: "confirmed", label: "Confirmed" }, { value: "assessing", label: "Still being assessed" }] },
+    { key: "mitigationNotes", label: "Mitigation / Monitoring Notes", type: "textarea", placeholder: "The team is actively monitoring developments..." },
+    { key: "recommendedAction", label: "Recommended Customer Action or Contact Guidance", type: "textarea", placeholder: "Customers with questions should contact their representative..." },
+  ],
+};
+
+// ─── System Prompt (mirrors the Supabase edge function) ──────────────────────
+
+function buildSystemPrompt(advisoryType) {
+  const UNIVERSAL = `You are drafting a customer-facing Avendra customer advisory.
+
+Write a polished advisory draft based on structured internal inputs, advisory-type rules, and selected reference examples.
+
+Follow these rules strictly:
+1. The title must always begin with "Customer Advisory:"
+2. Do not use the advisory type itself as the title
+3. Include an Overview section
+4. Include all overview fields that are provided by the user
+5. Standard Overview fields may include: Notification Date, Affected Supplier(s), Affected Area(s), Questions
+6. In the Overview section, use "&" instead of "and" wherever appropriate
+7. Rewrite the Questions line into simple customer-facing wording using the format: Contact [X]
+8. Keep the tone factual, concise, operational, and customer-facing
+9. Begin the body with the most important information first
+10. Do not output field labels such as "What happened?", "Why is this affecting operations?", etc.
+11. Instead, synthesize the inputs into a cohesive advisory draft
+12. Do not invent facts that are not provided
+13. If some information is missing, omit it cleanly
+14. Closing language should include the appropriate party to contact
+15. Use the example only for tone, structure, and level of detail. Do not copy facts.
+
+OUTPUT POLISHING (apply to ALL sections):
+16. Apply light proofreading and normalization to every field in the output.
+17. Correct spelling mistakes, capitalization errors, punctuation issues, and minor grammar problems.
+18. Capitalize proper nouns, place names, supplier names, and company names appropriately.
+19. Use professional, polished, customer-facing business language throughout.
+20. Keep the meaning and facts exactly the same — only correct language and formatting errors.
+
+Return a JSON object with this exact schema:
+{
+  "title": "string — the advisory title starting with Customer Advisory:",
+  "overview": {
+    "notificationDate": "string or null",
+    "affectedSuppliers": "string or null",
+    "affectedAreas": "string or null",
+    "questions": "string or null",
+    "supplierStatus": "string or null",
+    "affectedCustomers": "string or null"
+  },
+  "body": "string — the main advisory body text",
+  "closing": "string — closing guidance for customers"
+}
+
+Only return valid JSON. Do not include markdown formatting, code fences, or any other text outside the JSON object.`;
+
+  const typeRules = {
+    weather: `Advisory Type: Weather\n- Emphasize operational disruption risk\n- Mention delivery delays, closures, or will-call status when relevant\n- Closing language should prepare customers for possible disruption\n\nGOLDEN EXAMPLE (tone/structure only):\nCustomer Advisory: Potential Delivery Service Disruptions Due to Winter Storm\n\nOverview\nNotification Date: 2/23/2026\nAffected Suppliers: US Foods, Chef's Warehouse, & Sid Wainer\nAffected Area: Areas serviced by USF - Allentown, Norwich, Seabrook, & Swedesboro; Sid Wainer; & Chef's Warehouse - NY\nQuestions: Contact your US Foods or Supplier Representative\n\nDue to the significant winter storm, with unsafe travel conditions across the regions, several distributors' delivery services will be impacted on Tuesday, 2/24:\n\nUS Foods Updates\nUSF - Allentown: Every effort is being made to make all scheduled deliveries, but this will be contingent upon staffing availability.\nUSF - Seabrook: Deliveries scheduled for 2/24 are rescheduled to Wednesday and Thursday.\nSid Wainer will be closed with no deliveries on Tuesday, 2/24.\n\nPlease stay in touch with your US Foods account representative and be prepared for the potential delivery delays.`,
+
+    "food-recall": `Advisory Type: Food Recall\n- Include Supplier Status in the Overview when provided\n- Clearly identify the affected product and recall issue\n- Prioritize immediate customer action\n- Keep the tone direct, safety-focused, operational, and professional\n\nGOLDEN EXAMPLE (tone/structure only):\nCustomer Advisory: Hormel Affected FIRE BRAISED Products Recall\n\nOverview\nNotification Date: 10/25/2025\nAffected Supplier(s): Hormel Food Sales, LLC\nSupplier Status: Contracted\nAffected Area(s): U.S.\nQuestions: Contact Your Distributor Representative\n\nHormel Foods Sales, LLC is voluntarily recalling HORMEL® FIRE BRAISED™ chicken products that have an establishment number of P-223, as it may contain extraneous metal material. All impacted products must not be sold, served, or used.\n\nAvendra's recommendation:\nDiscontinue use immediately and check refrigerators and freezers for affected inventory.\nPlease expect communication(s) from your distributor(s) for additional details on product disposal and reimbursement procedures.\n\nFor any questions, please don't hesitate to reach out to your Avendra representative or distributor representative.`,
+
+    "company-announcement": `Advisory Type: Company Announcement\n- Focus on the business update and why it matters to customers\n- Maintain a neutral, professional, customer-facing tone\n- Keep the body concise unless more explanation is required\n\nGOLDEN EXAMPLE (tone/structure only):\nCustomer Advisory: Standard Textile Remains Available Through Avendra\n\nOverview\nNotification Date: 3/20/2026\nAffected Supplier(s): Standard Textiles\nQuestions: Contact your Avendra representative\n\nYou may have recently received an email from Standard Textile regarding a direct offering. Please note that Standard Textile will continue to be available through Avendra beyond 4/1, with the same pricing, supported by Avendra's contracting, service, and benefit structure.\n\nIf you have any questions, please do not hesitate to contact your Avendra representative.`,
+
+    general: `Advisory Type: General\n- Keep the advisory organized around: what happened, why it matters, customer operational impact, what customers should do next\n\nGOLDEN EXAMPLE (tone/structure only):\nCustomer Advisory: American Hotel Register Business Unexpected Closing & Wind-Down\n\nOverview\nNotification Date: 11/21/2025\nAffected Suppliers: American Hotel Register (AHR)\nSupplier Status: Contracted\nAffected Area: U.S., Canada, & LATAM-C\nQuestions: Contact Your Avendra Representative or AHR\n\nAmerican Hotel Register (AHR) is entering an unexpected liquidation and wind-down process. They plan to continue operating for the next few weeks to support Avendra clients.\n\nEffective immediately, all customer orders through AHR/CHS will require prepayment (ACH or credit card). Standard payment terms will no longer be accepted.\n\nFor any questions, please don't hesitate to reach out to your Avendra representative. Avendra will continue to monitor the situation and provide updates as necessary.`,
+
+    "tariff-related": `Advisory Type: Tariff Related\n- Open with the tariff-related update and why it matters\n- Must include disclaimer language at the bottom of the body\n- Required disclaimer: "Please note that the information provided herein is intended to convey general information regarding Avendra International's current strategies for mitigating the impacts of new tariff rates and impacted areas, as understood by Avendra solely as of the date noted above. As the situation regarding tariffs remains fluid, the information contained herein is subject to change. The contents herein should not be construed as, and should not be relied upon for, legal advice in any particular circumstance or fact situation, and do not alter the terms of any agreements held by any party with Avendra or its affiliates. Avendra disclaims all liability in respect to actions taken or not taken based on any or all of the contents herein to the fullest extent permitted by law."\n\nGOLDEN EXAMPLE (tone/structure only):\nCustomer Advisory: Latest Tariff Updates\n\nNotification Date: 08/04/2025\n\nDear Client/Customer,\nOn August 1, 2025, the White House announced a new round of tariffs targeting several categories of imported goods. Notable increases have been imposed on products originating from Canada, Brazil, and India.\n\nWe recognize the importance of safeguarding operational continuity. Our team is actively monitoring these tariff developments and collaborating with industry partners to assess the potential impacts on your supply chain.\n\n[Disclaimer language here]\n\nPlease note that the information provided herein...Avendra disclaims all liability...`,
+
+    "fuel-surcharge": `Advisory Type: Fuel Surcharge\n- Overview section should include: Notification Date, Affected Supplier, Supplier Status, Affected Customers, Questions\n- Use "Supplier Status" instead of "Contract Status"\n- Use "Affected Customers" instead of "Affected Area(s)"\n- Always include a "Next Steps & Support" section heading in the final advisory body\n- Required closing paragraphs (MANDATORY, include verbatim, only replacing [Supplier Name]):\n  "While market-driven price fluctuations are unavoidable, Avendra's negotiated terms ensure your surcharge rate remains more favorable than standard distributor pricing, providing better protection against fuel-cost volatility."\n  "Avendra appreciates your understanding as we work with [Supplier Name] to manage rising fuel costs while continuing to deliver the quality and service you expect."\n\nGOLDEN EXAMPLE (tone/structure only):\nCustomer Advisory: Vesta Foodservice Fuel Surcharge Effective 4/7\n\nOverview\nNotification Date: 4/3/2026\nAffected Supplier: Vesta Foodservice\nSupplier Status: Contracted\nAffected Customers: All Customers Serviced by the Supplier\nQuestion: Contact Your Avendra Representative\n\nEffective 4/7, Vesta Foodservice is implementing a fuel surcharge on deliveries, as permitted by Avendra's master agreement with the supplier.\n\nNext Steps & Support\n- Please be aware that this charge applies per delivery, instead of per invoice.\n- Vesta Foodservice will be issuing credit to customers that they have overcharged.\n\nWhile market-driven price fluctuations are unavoidable, Avendra's negotiated terms ensure your surcharge rate remains more favorable than standard distributor pricing, providing better protection against fuel-cost volatility.\n\nAvendra appreciates your understanding as we work with Vesta Foodservice to manage rising fuel costs while continuing to deliver the quality and service you expect.`,
+  };
+
+  return UNIVERSAL + "\n\n" + (typeRules[advisoryType] || "");
+}
+
+// ─── API Call ─────────────────────────────────────────────────────────────────
+
+async function generateAdvisory(gpo, advisoryType, overviewFields, typeFields, additionalInfo) {
+  const systemPrompt = buildSystemPrompt(advisoryType);
+
+  const userParts = [`GPO: ${gpo}`, `Advisory Type: ${advisoryType}`, "\n--- Overview Fields ---"];
+  const { notificationDate, affectedSuppliers, affectedAreas, questions, contractStatus } = overviewFields;
+  if (notificationDate) userParts.push(`Notification Date: ${notificationDate}`);
+  if (affectedSuppliers) userParts.push(`Affected Supplier(s): ${affectedSuppliers}`);
+  const isFuelSurcharge = advisoryType === "fuel-surcharge";
+  if (contractStatus) userParts.push(`${isFuelSurcharge ? "Supplier Status" : "Contract Status"}: ${contractStatus}`);
+  if (affectedAreas) userParts.push(`${isFuelSurcharge ? "Affected Customers" : "Affected Area(s)"}: ${affectedAreas}`);
+  if (questions) userParts.push(`Questions: ${questions}`);
+
+  const fieldDefs = TYPE_SPECIFIC_FIELDS[advisoryType] || [];
+  const detailLines = [];
+  for (const field of fieldDefs) {
+    const val = typeFields[field.key]?.trim();
+    if (val) {
+      const label = field.type === "select" && field.options
+        ? (field.options.find(o => o.value === val)?.label ?? val)
+        : val;
+      detailLines.push(`${field.label}: ${label}`);
+    }
+  }
+  if (detailLines.length) { userParts.push("\n--- Type-Specific Inputs ---"); userParts.push(...detailLines); }
+  if (additionalInfo?.trim()) userParts.push(`\nAdditional Information: ${additionalInfo}`);
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userParts.join("\n") }],
+    }),
+  });
+
+  const data = await response.json();
+  const text = data.content?.[0]?.text || "";
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const styles = `
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Serif+Display&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  .app {
+    font-family: 'DM Sans', sans-serif;
+    background: #f7f5f0;
+    min-height: 100vh;
+    padding: 0 0 60px;
+    color: #1a1a1a;
+  }
+
+  .header {
+    background: #1a1a1a;
+    padding: 20px 32px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .header-logo {
+    width: 28px; height: 28px;
+    background: #c8b560;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 600; color: #1a1a1a;
+  }
+
+  .header-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 17px;
+    color: #f7f5f0;
+    letter-spacing: 0.02em;
+  }
+
+  .header-badge {
+    margin-left: auto;
+    background: #c8b560;
+    color: #1a1a1a;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+  }
+
+  .container {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 36px 24px 0;
+  }
+
+  .gpo-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 28px;
+  }
+
+  .gpo-btn {
+    padding: 7px 18px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1.5px solid #d0ccc0;
+    background: white;
+    color: #555;
+    transition: all 0.15s;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  .gpo-btn:hover { border-color: #1a1a1a; color: #1a1a1a; }
+
+  .gpo-btn.active {
+    background: #1a1a1a;
+    border-color: #1a1a1a;
+    color: white;
+  }
+
+  .card {
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e8e4dc;
+    padding: 28px;
+    margin-bottom: 16px;
+  }
+
+  .section-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #999;
+    margin-bottom: 16px;
+  }
+
+  .type-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .type-btn {
+    padding: 10px 8px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1.5px solid #e8e4dc;
+    background: #faf9f6;
+    color: #555;
+    transition: all 0.15s;
+    text-align: center;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  .type-btn:hover { border-color: #c8b560; color: #1a1a1a; }
+
+  .type-btn.active {
+    border-color: #1a1a1a;
+    background: #1a1a1a;
+    color: white;
+  }
+
+  .field-group { margin-bottom: 18px; }
+
+  .field-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: #444;
+    margin-bottom: 6px;
+  }
+
+  .field-input, .field-textarea, .field-select {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1.5px solid #e8e4dc;
+    border-radius: 7px;
+    font-size: 13px;
+    font-family: 'DM Sans', sans-serif;
+    color: #1a1a1a;
+    background: white;
+    transition: border-color 0.15s;
+    outline: none;
+  }
+
+  .field-input:focus, .field-textarea:focus, .field-select:focus {
+    border-color: #1a1a1a;
+  }
+
+  .field-textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
+
+  .fields-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .generate-btn {
+    width: 100%;
+    padding: 13px;
+    background: #1a1a1a;
+    color: white;
+    border: none;
+    border-radius: 9px;
+    font-size: 14px;
+    font-weight: 500;
+    font-family: 'DM Sans', sans-serif;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+    letter-spacing: 0.01em;
+  }
+
+  .generate-btn:hover { background: #333; }
+  .generate-btn:active { transform: scale(0.99); }
+  .generate-btn:disabled { background: #999; cursor: not-allowed; }
+
+  .generating-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    background: #faf9f6;
+    border-radius: 9px;
+    border: 1px solid #e8e4dc;
+    margin-top: 16px;
+    font-size: 13px;
+    color: #666;
+  }
+
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid #e0ddd6;
+    border-top-color: #1a1a1a;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .output-card {
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e8e4dc;
+    overflow: hidden;
+    margin-top: 16px;
+  }
+
+  .output-header {
+    background: #1a1a1a;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .output-title-text {
+    font-family: 'DM Serif Display', serif;
+    font-size: 13px;
+    color: #f7f5f0;
+    letter-spacing: 0.02em;
+  }
+
+  .output-actions { display: flex; gap: 8px; }
+
+  .action-btn {
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: 'DM Sans', sans-serif;
+    transition: all 0.15s;
+    letter-spacing: 0.03em;
+  }
+
+  .copy-btn {
+    background: #c8b560;
+    color: #1a1a1a;
+    border: none;
+  }
+  .copy-btn:hover { background: #b8a550; }
+
+  .clear-btn {
+    background: transparent;
+    color: #aaa;
+    border: 1px solid #444;
+  }
+  .clear-btn:hover { color: white; border-color: #aaa; }
+
+  .output-body { padding: 24px 28px; }
+
+  .advisory-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 18px;
+    color: #1a1a1a;
+    margin-bottom: 20px;
+    line-height: 1.3;
+  }
+
+  .overview-block {
+    background: #faf9f6;
+    border: 1px solid #e8e4dc;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+  }
+
+  .overview-heading {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #999;
+    margin-bottom: 10px;
+  }
+
+  .overview-row {
+    display: flex;
+    font-size: 13px;
+    margin-bottom: 5px;
+    line-height: 1.4;
+  }
+
+  .overview-key { color: #888; min-width: 140px; flex-shrink: 0; }
+  .overview-val { color: #1a1a1a; }
+
+  .advisory-body {
+    font-size: 14px;
+    line-height: 1.75;
+    color: #2a2a2a;
+    white-space: pre-wrap;
+    margin-bottom: 16px;
+  }
+
+  .advisory-closing {
+    font-size: 14px;
+    line-height: 1.75;
+    color: #2a2a2a;
+    padding-top: 16px;
+    border-top: 1px solid #e8e4dc;
+    font-style: italic;
+  }
+
+  .error-box {
+    background: #fff5f5;
+    border: 1px solid #fcc;
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 13px;
+    color: #c00;
+    margin-top: 16px;
+  }
+
+  .unavailable {
+    text-align: center;
+    padding: 48px 0;
+    color: #aaa;
+    font-size: 13px;
+  }
+
+  .divider { height: 1px; background: #e8e4dc; margin: 20px 0; }
+
+  .field-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 5px;
+    font-size: 11px;
+    color: #aaa;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s;
+    max-width: 100%;
+  }
+
+  .field-hint:hover { color: #c8b560; }
+  .field-hint:active { transform: scale(0.97); }
+
+  .field-hint-icon {
+    font-size: 10px;
+    flex-shrink: 0;
+  }
+
+  .field-hint-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 360px;
+  }
+
+  .field-hint.filled {
+    color: #b8c8a0;
+  }
+`;
+
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export default function AdvisoryDraftAssistant() {
+  const [gpo, setGpo] = useState("Avendra");
+  const [advisoryType, setAdvisoryType] = useState("weather");
+  const [overview, setOverview] = useState({ notificationDate: "", affectedSuppliers: "", affectedAreas: "", questions: "", contractStatus: "" });
+  const [typeFields, setTypeFields] = useState({});
+  const [additionalInfo, setAdditionalInfo] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | generating | success | error
+  const [result, setResult] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [formKey, setFormKey] = useState(0);
+
+  const handleTypeChange = (t) => {
+    setAdvisoryType(t);
+    setTypeFields({});
+    setResult(null);
+    setStatus("idle");
+  };
+
+  const handleGpoChange = (g) => {
+    setGpo(g);
+    setTypeFields({});
+    setResult(null);
+    setStatus("idle");
+    setFormKey(k => k + 1);
+  };
+
+  const handleGenerate = useCallback(async () => {
+    setStatus("generating");
+    setResult(null);
+    try {
+      const advisory = await generateAdvisory(gpo, advisoryType, overview, typeFields, additionalInfo);
+      setResult(advisory);
+      setStatus("success");
+    } catch (e) {
+      console.error(e);
+      setStatus("error");
+    }
+  }, [gpo, advisoryType, overview, typeFields, additionalInfo]);
+
+  const handleClear = () => {
+    setResult(null);
+    setStatus("idle");
+    setTypeFields({});
+    setOverview({ notificationDate: "", affectedSuppliers: "", affectedAreas: "", questions: "", contractStatus: "" });
+    setAdditionalInfo("");
+    setFormKey(k => k + 1);
+  };
+
+  const handleCopy = () => {
+    if (!result) return;
+    const isFuel = advisoryType === "fuel-surcharge";
+    const lines = [result.title, ""];
+    lines.push("Overview");
+    if (result.overview.notificationDate) lines.push(`Notification Date: ${result.overview.notificationDate}`);
+    if (result.overview.affectedSuppliers) lines.push(`Affected Supplier(s): ${result.overview.affectedSuppliers}`);
+    if (result.overview.supplierStatus) lines.push(`Supplier Status: ${result.overview.supplierStatus}`);
+    if (isFuel && result.overview.affectedCustomers) lines.push(`Affected Customers: ${result.overview.affectedCustomers}`);
+    else if (result.overview.affectedAreas) lines.push(`Affected Area(s): ${result.overview.affectedAreas}`);
+    if (result.overview.questions) lines.push(`Questions: ${result.overview.questions}`);
+    lines.push("", result.body, "", result.closing);
+    navigator.clipboard.writeText(lines.join("\n")).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const fields = TYPE_SPECIFIC_FIELDS[advisoryType] || [];
+  const isFuel = advisoryType === "fuel-surcharge";
+  const showContractStatus = advisoryType === "food-recall" || isFuel;
+
+  return (
+    <>
+      <style>{styles}</style>
+      <div className="app">
+        <div className="header">
+          <div className="header-logo">A</div>
+          <span className="header-title">Advisory Draft Assistant</span>
+          <span className="header-badge">Avendra</span>
+        </div>
+
+        <div className="container">
+          {/* GPO Selector */}
+          <div className="gpo-row">
+            {GPO_OPTIONS.map(g => (
+              <button key={g} className={`gpo-btn${gpo === g ? " active" : ""}`} onClick={() => handleGpoChange(g)}>{g}</button>
+            ))}
+          </div>
+
+          {gpo !== "Avendra" ? (
+            <div className="unavailable">{gpo} advisory generation is not yet available.</div>
+          ) : (
+            <>
+              {/* Advisory Type */}
+              <div className="card" key={`type-${formKey}`}>
+                <div className="section-label">Advisory Type</div>
+                <div className="type-grid">
+                  {ADVISORY_TYPES.map(t => (
+                    <button key={t.value} className={`type-btn${advisoryType === t.value ? " active" : ""}`} onClick={() => handleTypeChange(t.value)}>{t.label}</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Overview Fields */}
+              <div className="card">
+                <div className="section-label">Overview</div>
+                <div className="fields-2col">
+                  <div className="field-group">
+                    <label className="field-label">Notification Date</label>
+                    <input className="field-input" type="text" placeholder="e.g. April 23, 2026" value={overview.notificationDate} onChange={e => setOverview(o => ({ ...o, notificationDate: e.target.value }))} />
+                    <span className="field-hint" onClick={() => setOverview(o => ({ ...o, notificationDate: "April 23, 2026" }))} title="Click to fill"><span className="field-hint-icon">↩</span><span className="field-hint-text">April 23, 2026</span></span>
+                  </div>
+                  <div className="field-group">
+                    <label className="field-label">Affected Supplier(s)</label>
+                    <input className="field-input" type="text" placeholder="e.g. US Foods" value={overview.affectedSuppliers} onChange={e => setOverview(o => ({ ...o, affectedSuppliers: e.target.value }))} />
+                    <span className="field-hint" onClick={() => setOverview(o => ({ ...o, affectedSuppliers: "US Foods" }))} title="Click to fill"><span className="field-hint-icon">↩</span><span className="field-hint-text">US Foods</span></span>
+                  </div>
+                </div>
+                <div className="field-group">
+                  <label className="field-label">{isFuel ? "Affected Customers" : "Affected Area(s)"}</label>
+                  <input className="field-input" type="text" placeholder={isFuel ? "e.g. All Customers Serviced by the Supplier" : "e.g. U.S. Northeast"} value={overview.affectedAreas} onChange={e => setOverview(o => ({ ...o, affectedAreas: e.target.value }))} />
+                  <span className="field-hint" onClick={() => setOverview(o => ({ ...o, affectedAreas: isFuel ? "All Customers Serviced by the Supplier" : "U.S. Northeast" }))} title="Click to fill"><span className="field-hint-icon">↩</span><span className="field-hint-text">{isFuel ? "All Customers Serviced by the Supplier" : "U.S. Northeast"}</span></span>
+                </div>
+                {showContractStatus && (
+                  <div className="field-group">
+                    <label className="field-label">Supplier Status</label>
+                    <select className="field-select" value={overview.contractStatus} onChange={e => setOverview(o => ({ ...o, contractStatus: e.target.value }))}>
+                      <option value="">Select...</option>
+                      <option value="Contracted">Contracted</option>
+                      <option value="Non-Contracted">Non-Contracted</option>
+                    </select>
+                  </div>
+                )}
+                <div className="field-group" style={{ marginBottom: 0 }}>
+                  <label className="field-label">Questions / Contact</label>
+                  <input className="field-input" type="text" placeholder="e.g. Contact your Avendra representative" value={overview.questions} onChange={e => setOverview(o => ({ ...o, questions: e.target.value }))} />
+                  <span className="field-hint" onClick={() => setOverview(o => ({ ...o, questions: "Contact your Avendra representative" }))} title="Click to fill"><span className="field-hint-icon">↩</span><span className="field-hint-text">Contact your Avendra representative</span></span>
+                </div>
+              </div>
+
+              {/* Type-Specific Fields */}
+              {fields.length > 0 && (
+                <div className="card" key={`fields-${advisoryType}-${formKey}`}>
+                  <div className="section-label">Details</div>
+                  {fields.map(field => {
+                    if (field.showWhen) {
+                      if (typeFields[field.showWhen.field] !== field.showWhen.value) return null;
+                    }
+                    return (
+                      <div className="field-group" key={field.key}>
+                        <label className="field-label">{field.label}</label>
+                        {field.type === "textarea" ? (
+                          <>
+                            <textarea className="field-textarea" placeholder={field.placeholder} value={typeFields[field.key] || ""} onChange={e => setTypeFields(f => ({ ...f, [field.key]: e.target.value }))} />
+                            {field.placeholder && <span className="field-hint" onClick={() => setTypeFields(f => ({ ...f, [field.key]: field.placeholder }))} title="Click to fill"><span className="field-hint-icon">↩</span><span className="field-hint-text">{field.placeholder}</span></span>}
+                          </>
+                        ) : field.type === "select" ? (
+                          <select className="field-select" value={typeFields[field.key] || ""} onChange={e => setTypeFields(f => ({ ...f, [field.key]: e.target.value }))}>
+                            <option value="">Select...</option>
+                            {field.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        ) : (
+                          <>
+                            <input className="field-input" type="text" placeholder={field.placeholder} value={typeFields[field.key] || ""} onChange={e => setTypeFields(f => ({ ...f, [field.key]: e.target.value }))} />
+                            {field.placeholder && <span className="field-hint" onClick={() => setTypeFields(f => ({ ...f, [field.key]: field.placeholder }))} title="Click to fill"><span className="field-hint-icon">↩</span><span className="field-hint-text">{field.placeholder}</span></span>}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Additional Info */}
+              <div className="card">
+                <div className="section-label">Additional Information</div>
+                <textarea className="field-textarea" placeholder="Any other context or details to include..." value={additionalInfo} onChange={e => setAdditionalInfo(e.target.value)} style={{ marginBottom: 0 }} />
+              </div>
+
+              <button className="generate-btn" onClick={handleGenerate} disabled={status === "generating"}>
+                {status === "generating" ? "Generating..." : "Generate Advisory Draft"}
+              </button>
+
+              {status === "generating" && (
+                <div className="generating-bar">
+                  <div className="spinner" />
+                  Drafting your advisory...
+                </div>
+              )}
+
+              {status === "error" && (
+                <div className="error-box">Something went wrong generating the advisory. Please check your inputs and try again.</div>
+              )}
+
+              {status === "success" && result && (
+                <div className="output-card">
+                  <div className="output-header">
+                    <span className="output-title-text">Generated Advisory</span>
+                    <div className="output-actions">
+                      <button className="action-btn copy-btn" onClick={handleCopy}>{copied ? "Copied!" : "Copy"}</button>
+                      <button className="action-btn clear-btn" onClick={handleClear}>Clear</button>
+                    </div>
+                  </div>
+                  <div className="output-body">
+                    <div className="advisory-title">{result.title}</div>
+                    <div className="overview-block">
+                      <div className="overview-heading">Overview</div>
+                      {result.overview.notificationDate && <div className="overview-row"><span className="overview-key">Notification Date</span><span className="overview-val">{result.overview.notificationDate}</span></div>}
+                      {result.overview.affectedSuppliers && <div className="overview-row"><span className="overview-key">Affected Supplier(s)</span><span className="overview-val">{result.overview.affectedSuppliers}</span></div>}
+                      {result.overview.supplierStatus && <div className="overview-row"><span className="overview-key">Supplier Status</span><span className="overview-val">{result.overview.supplierStatus}</span></div>}
+                      {isFuel && result.overview.affectedCustomers
+                        ? <div className="overview-row"><span className="overview-key">Affected Customers</span><span className="overview-val">{result.overview.affectedCustomers}</span></div>
+                        : result.overview.affectedAreas && <div className="overview-row"><span className="overview-key">Affected Area(s)</span><span className="overview-val">{result.overview.affectedAreas}</span></div>}
+                      {result.overview.questions && <div className="overview-row"><span className="overview-key">Questions</span><span className="overview-val">{result.overview.questions}</span></div>}
+                    </div>
+                    <div className="advisory-body">{result.body}</div>
+                    <div className="advisory-closing">{result.closing}</div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
